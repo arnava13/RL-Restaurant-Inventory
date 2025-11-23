@@ -1,0 +1,5 @@
+torch
+torch_geometric
+gymnasium[classic-control]
+matplotlib
+IPython
