@@ -3,22 +3,17 @@
 Per-item DeepSets Actor–Critic for restaurant inventory RL (variable-size item sets).
 
 This version produces **per-item actions** via a shared decoder head:
-    dec([φ(z_i), g_env]) -> (μ_i, logσ_i)   for each item i
+    dec([φ(z_i), g_env]) -> (μ_i, log sig_i)   for each item i
 
 - φ(z_i): per-item embedding
 - g_env:  pooled (permutation-invariant) global context for that env
 - Actions are emitted for ALL items present in the batch; sizes can vary by env.
 - Log-probabilities are summed per env for PPO-style updates.
 
-References (key architectural choices):
+References:
   - DeepSets invariant pooling (sum/mean/max):
     Zaheer et al., 2017 "Deep Sets"  https://arxiv.org/abs/1703.06114
     (good summary: https://www.scibits.blog/posts/deepsets/)
-  - GlobalAttention readout (soft attention pooling / gated readout):
-    Li et al., 2015 "Gated Graph Sequence Neural Networks" https://arxiv.org/abs/1511.05493
-  - PMA / Set Transformer pooling:
-    Lee et al., 2019 "Set Transformer" https://arxiv.org/abs/1810.00825
-    PyG SetTransformerAggregation (adaptive readouts): https://arxiv.org/abs/2211.04952
 """
 
 from dataclasses import dataclass
@@ -29,8 +24,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
 
-from torch_geometric.nn import aggr, GlobalAttention
-from torch_geometric.nn.aggr import SetTransformerAggregation
+from torch_geometric.nn import aggr
 
 
 # ----------------------------------------------------------------------
@@ -80,10 +74,6 @@ class DeepSetsAggregator(nn.Module):
 
     Fixed aggregations:
       - Sum / Mean / Max  (DeepSets: Zaheer et al., 2017)
-    Optional attention pooling (choose one):
-      - "global": GlobalAttention (Li et al., 2015 GGS-NN)  https://arxiv.org/abs/1511.05493
-      - "settransformer": PMA-like SetTransformerAggregation (Lee et al., 2019)  https://arxiv.org/abs/1810.00825
-        (PyG adaptive readouts)  https://arxiv.org/abs/2211.04952
     """
     def __init__(
         self,
@@ -91,16 +81,10 @@ class DeepSetsAggregator(nn.Module):
         use_sum: bool = True,
         use_mean: bool = True,
         use_max: bool = True,
-        attention_type: Optional[str] = None,      # {None, "global", "settransformer"}
-        attention_hidden_dim: Optional[int] = None # for "global"
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.use_sum, self.use_mean, self.use_max = use_sum, use_mean, use_max
-
-        if attention_type not in (None, "global", "settransformer"):
-            raise ValueError(f"Unsupported attention_type: {attention_type}")
-        self.attention_type = attention_type
 
         if use_sum:
             self.sum_aggr = aggr.SumAggregation()
@@ -109,41 +93,12 @@ class DeepSetsAggregator(nn.Module):
         if use_max:
             self.max_aggr = aggr.MaxAggregation()
 
-        self.attn_pool = None
-        if attention_type == "global":
-            if attention_hidden_dim is None:
-                attention_hidden_dim = hidden_dim
-            # GlobalAttention (soft attention pooling), Li et al., 2015
-            # https://arxiv.org/abs/1511.05493
-            gate_nn = nn.Sequential(
-                nn.Linear(hidden_dim, attention_hidden_dim),
-                nn.ReLU(),
-                nn.Linear(attention_hidden_dim, 1),
-            )
-            self.attn_pool = GlobalAttention(gate_nn=gate_nn)
-        elif attention_type == "settransformer":
-            # SetTransformerAggregation (PMA-like), Lee et al., 2019
-            # https://arxiv.org/abs/1810.00825  (via PyG adaptive readouts)
-            # https://arxiv.org/abs/2211.04952
-            self.attn_pool = SetTransformerAggregation(
-                channels=hidden_dim,
-                num_seed_points=1,
-                num_encoder_blocks=1,
-                num_decoder_blocks=1,
-                heads=1,
-                concat=True,
-                layer_norm=False,
-                dropout=0.0,
-            )
-
         out_dim = 0
         if use_sum:
             out_dim += hidden_dim
         if use_mean:
             out_dim += hidden_dim
         if use_max:
-            out_dim += hidden_dim
-        if self.attn_pool is not None:
             out_dim += hidden_dim
         self._out_dim = out_dim
 
@@ -162,9 +117,6 @@ class DeepSetsAggregator(nn.Module):
             outs.append(self.mean_aggr(x, index=batch, dim=0, dim_size=batch_size))
         if self.use_max:
             outs.append(self.max_aggr(x, index=batch, dim=0, dim_size=batch_size))
-        if self.attn_pool is not None:
-            pass
-            #outs.append(self.attn_pool(x, index=batch, dim_size=batch_size))
 
         return torch.cat(outs, dim=-1)  # [batch_size, out_dim]
 
@@ -251,14 +203,10 @@ class InventoryModelConfig:
     item_hidden_dim: int = 64
     item_dropout: float = 0.0
 
-    # Aggregation options (actor / critic may differ in attention type)
-    # attention_type_* ∈ {None, "global", "settransformer"}
-    actor_attention_type: Optional[str] = None
-    critic_attention_type: Optional[str] = "settransformer"
+    # Aggregation options
     use_sum: bool = True
     use_mean: bool = True
     use_max: bool = True
-    attention_hidden_dim: Optional[int] = None  # for "global" attention
 
     # Heads
     actor_hidden_dim: int = 128
@@ -272,7 +220,7 @@ class InventoryActorCritic(nn.Module):
     DeepSets per-item Actor–Critic:
 
       φ:  shared per-item encoder
-      AGG: env-level pooling (sum/mean/max [+ optional attention])
+      AGG: env-level pooling (sum/mean/max)
       dec: shared per-item Gaussian head   (uses [φ(z_i), g_env] per item)
       V:   env-level value head on pooled context
 
@@ -306,22 +254,18 @@ class InventoryActorCritic(nn.Module):
             dropout=config.item_dropout,
         )
 
-        # Env-level aggregators (actor/critic can differ by attention choice)
+        # Env-level aggregators
         self.actor_agg = DeepSetsAggregator(
             hidden_dim=config.item_hidden_dim,
             use_sum=config.use_sum,
             use_mean=config.use_mean,
             use_max=config.use_max,
-            attention_type=config.actor_attention_type,
-            attention_hidden_dim=config.attention_hidden_dim,
         )
         self.critic_agg = DeepSetsAggregator(
             hidden_dim=config.item_hidden_dim,
             use_sum=config.use_sum,
             use_mean=config.use_mean,
             use_max=config.use_max,
-            attention_type=config.critic_attention_type,
-            attention_hidden_dim=config.attention_hidden_dim,
         )
 
         # We append "set size" scalar N and global features to env context for both heads
