@@ -20,20 +20,6 @@ def train_demand_model():
 
     print(f"Loading historical data from {data_dir}...")
     history = load_historical_demands(data_dir)
-    
-    if not history:
-        print(f"No data found in {data_dir}. Generating synthetic data for demonstration...")
-        # Synthetic data: 2 dishes, 100 days
-        # Dish 0: Mean 12, slight trend
-        # Dish 1: Mean 30, seasonality
-        # WE INJECT EXTRA NOISE HERE to ensure the LSTM doesn't perfectly match the Env GP
-        # This simulates "forecast error" or "unknown unknowns"
-        t = np.arange(100)
-        history = {
-            0: [np.random.poisson(12 + 0.05*i + np.random.normal(0, 2)) for i in t],
-            1: [np.random.poisson(30 + 5*np.sin(2*np.pi*i/7) + np.random.normal(0, 5)) for i in t]
-        }
-
     # Determine n_dishes from data
     n_dishes = len(history)
     print(f"Found history for {n_dishes} dishes.")

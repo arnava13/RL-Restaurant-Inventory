@@ -139,9 +139,8 @@ class KitchenEnv(gym.Env):
         self,
         ingredients=None,
         dishes=None,
-        capacity=300,
+        capacity=300, 
         labor_limit=10,
-        holding=0.3,
         spoil_penalty=2.0,
         short_penalty=2.0,
         labor_cost=0.0,
@@ -260,7 +259,6 @@ class KitchenEnv(gym.Env):
         # ----------------------------------------
         # COST PARAMETERS
         # ----------------------------------------
-        self.holding = float(holding)
         self.spoil_penalty = float(spoil_penalty)
         self.short_penalty = float(short_penalty)
         self.labor_cost = float(labor_cost)
@@ -552,7 +550,6 @@ class KitchenEnv(gym.Env):
         total_raw_units = sum(vec.sum() for vec in self.raw_inv)
         total_prep_units = sum(vec.sum() for vec in self.prep_inv)
 
-        hold_cost = self.holding * (total_raw_units + total_prep_units)
         spoil_cost = self.spoil_penalty * (spoil_raw.sum() + spoil_prep.sum())
         short_cost = self.short_penalty * short.sum()
 
@@ -562,8 +559,7 @@ class KitchenEnv(gym.Env):
         reward = (
             revenue
             - cost_raw
-            - hold_cost
-            - spoil_cost
+            - spoil_cost    
             - short_cost
             - labor_cost_term
         )

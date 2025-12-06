@@ -2,7 +2,7 @@
 """
 Per-item DeepSets Actor–Critic for restaurant inventory RL (variable-size item sets).
 
-This version produces **per-item actions** via a shared decoder head:
+This produces per-item actions via a shared decoder head:
     dec([φ(z_i), g_env]) -> (μ_i, log sig_i)   for each item i
 
 - φ(z_i): per-item embedding
@@ -47,7 +47,7 @@ def mlp(in_dim: int, hidden_dim: int, out_dim: int, n_layers: int = 2, dropout: 
 # Encoders and Aggregators
 # ----------------------------------------------------------------------
 
-class ItemEncoder(nn.Module):
+class ItemEncoder(nn.Module): # in: lead time, shelf life, inventory amount, cost, mu, sigma
     """
     Per-item encoder φ(z_i): maps raw item features to an embedding.
 
@@ -133,9 +133,6 @@ class GaussianPolicyHead(nn.Module):
     - Outputs parameters for a factorised Gaussian action **per item**.
     - Supports variable-size item sets via 'item_batch' mapping.
 
-    NOTE: projection to feasibility (budget/capacity/MOQ) should be handled
-    in env.py or a post-policy wrapper; the Gaussian lives in a latent space.
-
     log_std is clamped to keep exploration sane.
     """
     def __init__(
@@ -155,26 +152,29 @@ class GaussianPolicyHead(nn.Module):
         self.lmin = log_std_min
         self.lmax = log_std_max
 
-    def forward(self, item_embed: torch.Tensor, env_ctx_for_items: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, item_embed: torch.Tensor, env_ctx_for_items: torch.Tensor, env_ctx_general: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]: 
         """
         Args:
-            item_embed:        [num_items, item_embed_dim]
-            env_ctx_for_items: [num_items, env_ctx_dim]  (context cloned by item_batch)
+            item_embed:        [num_items, item_embed_dim] # item of interest
+            env_ctx_for_items: [num_items, env_ctx_dim]  (context cloned by item_batch) #pooled
+            embedding of ingredients
+            env_ctx_general: [env_ctx_dim] # global context
 
         Returns:
             mu_items:      [num_items, per_item_action_dim]
             log_std_items: [num_items, per_item_action_dim]
         """
-        x = torch.cat([item_embed, env_ctx_for_items], dim=-1)
+        x = torch.cat([item_embed, env_ctx_for_items, env_ctx_general], dim=-1)
         h = F.relu(self.core(x))
         mu = self.mu(h)
         log_std = self.log_std(h).clamp(self.lmin, self.lmax)
         return mu, log_std
 
+#kitchen context: storage space, budget
 
 class ValueHead(nn.Module):
     """
-    State-value head V(s) over env-level pooled context (+ global features).
+    State-value head V(s) over env-level pooled context (+ global kitchen features).
     """
     def __init__(self, in_dim: int, hidden_dim: int = 128):
         super().__init__()
